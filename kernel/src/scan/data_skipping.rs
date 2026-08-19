@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
-use std::time::Instant;
 
 use tracing::{debug, error};
 
@@ -21,7 +20,7 @@ use crate::scan::log_replay::PARTITION_VALUES_PARSED_NAME;
 use crate::scan::metrics::ScanMetrics;
 use crate::schema::{lazy_schema_ref, schema_ref, DataType, PrimitiveType, SchemaRef};
 use crate::table_configuration::TableConfiguration;
-use crate::utils::require;
+use crate::utils::{require, Instant};
 use crate::{Engine, EngineData, Error, ExpressionEvaluator, PredicateEvaluator, RowVisitor as _};
 
 pub(crate) mod stats_schema;

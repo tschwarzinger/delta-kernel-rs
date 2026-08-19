@@ -90,6 +90,9 @@ version = "59"
 features = ["async", "object_store"]
 optional = true
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1.1"
+
 [features]
 # no default features
 default = []

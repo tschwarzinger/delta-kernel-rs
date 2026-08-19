@@ -1,0 +1,5 @@
+# This cfg is required (along with the `wasm_js` feature, enabled from wasmtest/Cargo.toml) for
+# getrandom to compile on wasm32-unknown-unknown, which has no OS RNG. It is scoped to this
+# separate workspace only; the root workspace and `delta_kernel` are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

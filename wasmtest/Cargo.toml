@@ -1,0 +1,36 @@
+[package]
+name = "delta_kernel_wasmtest"
+description = "Test crate to compile delta_kernel to wasm32-unknown-unknown"
+edition = "2021"
+homepage = "https://delta.io"
+license = "Apache-2.0"
+repository = "https://github.com/delta-io/delta-kernel-rs"
+rust-version = "1.88"
+version = "0.1.0"
+publish = false
+
+# Separate workspace (not a member of the root workspace), mirroring `datafusion-executor/`.
+# This isolates the dependency resolution: wasm-specific feature unification (below) must not
+# leak into native builds of the root workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The crate under test. Default features (the plain core kernel) are what this verifies for wasm.
+delta_kernel = { path = "../kernel" }
+
+# wasm has no OS RNG, so getrandom needs its pure-JS `wasm_js` backend. These declarations do
+# NOT add anything to delta_kernel; they merely enable the feature on the getrandom instances
+# that delta_kernel pulls in transitively (rand's getrandom 0.3, and uuid's internal 0.4), via
+# Cargo feature unification. Same idea as DataFusion's `datafusion/wasmtest`.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_0_4 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+# delta_kernel uses uuid `v4, fast-rng`, which is rejected on wasm unless a wasm-compatible
+# randomness source feature is present; enable `rng-getrandom` here (feature-unified).
+uuid = { version = "1.22", features = ["rng-getrandom"] }
+
+# The `#[wasm_bindgen]` exports below make this a real wasm module (so `wasm-pack build` works);
+# they exercise a small slice of the kernel API as a compile-time smoke test.
+wasm-bindgen = "0.2"
