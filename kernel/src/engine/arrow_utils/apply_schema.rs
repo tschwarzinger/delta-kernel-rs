@@ -16,9 +16,10 @@ use crate::arrow::datatypes::{
     DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema,
 };
 use crate::engine::ensure_data_types::{ensure_data_types, ValidationMode};
-use crate::error::{DeltaResult, Error};
+use crate::error::KernelError;
 use crate::parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use crate::schema::{ArrayType, ColumnMetadataKey, DataType, MapType, Schema, StructField};
+use crate::KernelResult;
 
 // Apply a schema to an array. The array _must_ be a `StructArray`. Returns a `RecordBatch` where
 // the names of fields, nullable, and metadata in the struct have been transformed to match those
@@ -28,9 +29,9 @@ use crate::schema::{ArrayType, ColumnMetadataKey, DataType, MapType, Schema, Str
 // those nulls propagated. Arrow's JSON reader does this automatically, and parquet data goes
 // through `fix_nested_null_masks` which handles it. We decompose the struct and discard its null
 // buffer since RecordBatch cannot have top-level nulls.
-pub(crate) fn apply_schema(array: &dyn Array, schema: &DataType) -> DeltaResult<RecordBatch> {
+pub(crate) fn apply_schema(array: &dyn Array, schema: &DataType) -> KernelResult<RecordBatch> {
     let DataType::Struct(struct_schema) = schema else {
-        return Err(Error::generic(
+        return Err(KernelError::generic(
             "apply_schema at top-level must be passed a struct schema",
         ));
     };
@@ -67,14 +68,14 @@ fn new_field_with_metadata(
 fn transform_struct(
     struct_array: &StructArray,
     target_fields: impl Iterator<Item = impl Borrow<StructField>>,
-) -> DeltaResult<StructArray> {
+) -> KernelResult<StructArray> {
     let (input_fields, arrow_cols, nulls) = struct_array.clone().into_parts();
     let input_col_count = arrow_cols.len();
     let result_iter = arrow_cols
         .into_iter()
         .zip(input_fields.iter())
         .zip(target_fields)
-        .map(|((sa_col, input_field), target_field)| -> DeltaResult<_> {
+        .map(|((sa_col, input_field), target_field)| -> KernelResult<_> {
             let target_field = target_field.borrow();
             let transformed_col = apply_schema_to_inner(
                 &sa_col,
@@ -94,7 +95,7 @@ fn transform_struct(
                 arrow_metadata.get(PARQUET_FIELD_ID_META_KEY),
             ) {
                 if input_id != target_id {
-                    return Err(Error::generic(format!(
+                    return Err(KernelError::generic(format!(
                         "Field '{}': input field ID {} conflicts with target field ID {}",
                         target_field.name, input_id, target_id
                     )));
@@ -111,7 +112,7 @@ fn transform_struct(
     let (transformed_fields, transformed_cols): (Vec<ArrowField>, Vec<ArrayRef>) =
         result_iter.process_results(|iter| iter.unzip())?;
     if transformed_cols.len() != input_col_count {
-        return Err(Error::internal_error(format!(
+        return Err(KernelError::internal_error(format!(
             "Passed struct had {input_col_count} columns, but transformed column has {}",
             transformed_cols.len()
         )));
@@ -127,7 +128,7 @@ fn transform_struct(
 pub(crate) fn apply_schema_to_struct(
     array: &dyn Array,
     kernel_fields: &Schema,
-) -> DeltaResult<StructArray> {
+) -> KernelResult<StructArray> {
     let Some(sa) = array.as_struct_opt() else {
         return Err(make_arrow_error(
             "Arrow claimed to be a struct but isn't a StructArray",
@@ -144,7 +145,7 @@ fn apply_schema_to_list(
     target_inner_type: &ArrayType,
     nearest_ancestor_struct_field: Option<&StructField>,
     relative_path: &str,
-) -> DeltaResult<ListArray> {
+) -> KernelResult<ListArray> {
     let Some(la) = array.as_list_opt() else {
         return Err(make_arrow_error(
             "Arrow claimed to be a list but isn't a ListArray",
@@ -188,7 +189,7 @@ fn apply_schema_to_map(
     kernel_map_type: &MapType,
     ancestor: Option<&StructField>,
     relative_path: &str,
-) -> DeltaResult<MapArray> {
+) -> KernelResult<MapArray> {
     let Some(ma) = array.as_map_opt() else {
         return Err(make_arrow_error(
             "Arrow claimed to be a map but isn't a MapArray",
@@ -200,7 +201,7 @@ fn apply_schema_to_map(
     let (arrow_input_fields, mut arrow_cols, arrow_struct_nulls) =
         arrow_map_struct_array.into_parts();
     if arrow_cols.len() != 2 || arrow_input_fields.len() != 2 {
-        return Err(Error::internal_error(format!(
+        return Err(KernelError::internal_error(format!(
             "Map entries struct must have exactly 2 columns (key, value), got {}",
             arrow_cols.len()
         )));
@@ -270,7 +271,7 @@ fn apply_schema_to_map(
 
 // Apply `schema` to `array`. This handles renaming, and adjusting nullability and metadata. if the
 // actual data types don't match, this will return an error.
-pub(crate) fn apply_schema_to(array: &ArrayRef, schema: &DataType) -> DeltaResult<ArrayRef> {
+pub(crate) fn apply_schema_to(array: &ArrayRef, schema: &DataType) -> KernelResult<ArrayRef> {
     apply_schema_to_inner(array, schema, None, "")
 }
 
@@ -362,7 +363,7 @@ fn apply_schema_to_inner(
     schema: &DataType,
     ancestor: Option<&StructField>,
     relative_path: &str,
-) -> DeltaResult<ArrayRef> {
+) -> KernelResult<ArrayRef> {
     use DataType::*;
     let array: ArrayRef = match schema {
         Struct(stype) => Arc::new(apply_schema_to_struct(array, stype)?),
@@ -592,8 +593,9 @@ mod apply_schema_validation_tests {
                 .with_metadata([(field_id_key.to_string(), MetadataValue::Number(42))])),
         };
 
-        let arrow_field = ArrowField::new("a", ArrowDataType::Int32, false)
-            .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_string(), "42".to_string())].into());
+        let arrow_field = ArrowField::new("a", ArrowDataType::Int32, false).with_metadata(
+            HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "42".to_string())]),
+        );
         let input_array = StructArray::try_new(
             vec![arrow_field].into(),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -615,8 +617,9 @@ mod apply_schema_validation_tests {
                 .with_metadata([(field_id_key.to_string(), MetadataValue::Number(42))])),
         };
 
-        let arrow_field = ArrowField::new("a", ArrowDataType::Int32, false)
-            .with_metadata([(PARQUET_FIELD_ID_META_KEY.to_string(), "99".to_string())].into());
+        let arrow_field = ArrowField::new("a", ArrowDataType::Int32, false).with_metadata(
+            HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "99".to_string())]),
+        );
         let input_array = StructArray::try_new(
             vec![arrow_field].into(),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],

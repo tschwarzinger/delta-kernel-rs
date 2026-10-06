@@ -10,7 +10,7 @@ use crate::actions::{DomainMetadata, NUM_RECORDS};
 use crate::engine_data::{GetData, RowVisitor, TypedGetData as _};
 use crate::schema::{column_name, ColumnName, ColumnNamesAndTypes, DataType};
 use crate::utils::require;
-use crate::{DeltaResult, Engine, Error, Snapshot};
+use crate::{KernelError, KernelResult, Result};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,57 +22,38 @@ pub struct RowTrackingDomainMetadata {
 /// The domain name for row tracking metadata.
 pub(crate) const ROW_TRACKING_DOMAIN_NAME: &str = "delta.rowTracking";
 
-impl RowTrackingDomainMetadata {
-    /// The row ID high water mark for a table with no assigned row IDs yet. The first
-    /// file written receives `baseRowId = MISSING_ROW_ID_HIGH_WATERMARK + 1 = 0`.
-    pub(crate) const MISSING_ROW_ID_HIGH_WATERMARK: i64 = -1;
+/// The row-tracking high-water mark before any fresh row IDs have been assigned.
+pub const ROW_TRACKING_INITIAL_HIGH_WATER_MARK: i64 = -1;
 
+impl RowTrackingDomainMetadata {
     pub(crate) fn new(row_id_high_water_mark: i64) -> Self {
         RowTrackingDomainMetadata {
             row_id_high_water_mark,
         }
     }
 
-    /// Creates the initial row tracking domain metadata for a newly created table.
-    ///
-    /// Sets the high water mark to -1, meaning no rows have been assigned IDs yet.
-    /// The first file written will receive `baseRowId = 0`.
-    pub(crate) fn initial() -> Self {
-        Self::new(Self::MISSING_ROW_ID_HIGH_WATERMARK)
+    /// Returns the highest row ID represented by this metadata.
+    pub(crate) fn high_water_mark(&self) -> i64 {
+        self.row_id_high_water_mark
     }
 
-    /// Retrieves the row ID high water mark from the [`Snapshot`]'s row tracking domain metadata.
+    /// Creates the initial row tracking domain metadata for a newly created table.
     ///
-    /// This method searches through the snapshot's log segment for domain metadata actions
-    /// with the row tracking domain name and extracts the high water mark value.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(Some(high_water_mark))` if row tracking domain metadata is found,
-    /// `Ok(None)` if no row tracking domain metadata exists, or an error if the
-    /// metadata cannot be parsed or accessed.
-    ///
-    /// # Errors
-    ///
-    /// This method will return an error if:
-    /// - The domain metadata configuration cannot be read from the log segment
-    /// - The domain metadata JSON cannot be deserialized into `RowTrackingDomainMetadata`
-    pub fn get_high_water_mark(
-        snapshot: &Snapshot,
-        engine: &dyn Engine,
-    ) -> DeltaResult<Option<i64>> {
-        Ok(snapshot
-            .get_domain_metadata_internal(ROW_TRACKING_DOMAIN_NAME, engine)?
-            .map(|config| serde_json::from_str::<Self>(&config))
-            .transpose()?
-            .map(|metadata| metadata.row_id_high_water_mark))
+    /// Sets the high-water mark to [`ROW_TRACKING_INITIAL_HIGH_WATER_MARK`], meaning no rows have
+    /// been assigned IDs yet. The first file written will receive `baseRowId = 0`.
+    pub(crate) fn initial() -> Self {
+        Self::new(ROW_TRACKING_INITIAL_HIGH_WATER_MARK)
     }
 }
 
-impl TryFrom<RowTrackingDomainMetadata> for DomainMetadata {
-    type Error = crate::Error;
+pub(crate) fn parse_row_tracking_high_water_mark(configuration: &str) -> KernelResult<i64> {
+    Ok(serde_json::from_str::<RowTrackingDomainMetadata>(configuration)?.high_water_mark())
+}
 
-    fn try_from(metadata: RowTrackingDomainMetadata) -> DeltaResult<Self> {
+impl TryFrom<RowTrackingDomainMetadata> for DomainMetadata {
+    type Error = crate::KernelError;
+
+    fn try_from(metadata: RowTrackingDomainMetadata) -> Result<Self> {
         Ok(DomainMetadata::new(
             ROW_TRACKING_DOMAIN_NAME.to_string(),
             serde_json::to_string(&metadata)?,
@@ -103,7 +84,7 @@ impl RowTrackingVisitor {
         // Option<i64>
         Self {
             row_id_high_water_mark: row_id_high_water_mark
-                .unwrap_or(RowTrackingDomainMetadata::MISSING_ROW_ID_HIGH_WATERMARK),
+                .unwrap_or(ROW_TRACKING_INITIAL_HIGH_WATER_MARK),
             base_row_id_batches: Vec::with_capacity(num_batches.unwrap_or(0)),
         }
     }
@@ -121,10 +102,10 @@ impl RowVisitor for RowTrackingVisitor {
         NAMES_AND_TYPES.as_ref()
     }
 
-    fn visit<'a>(&mut self, row_count: usize, getters: &[&'a dyn GetData<'a>]) -> DeltaResult<()> {
+    fn visit<'a>(&mut self, row_count: usize, getters: &[&'a dyn GetData<'a>]) -> Result<()> {
         require!(
             getters.len() == 1,
-            Error::generic(format!(
+            KernelError::generic(format!(
                 "Wrong number of RowTrackingVisitor getters: {}",
                 getters.len()
             ))
@@ -136,7 +117,7 @@ impl RowVisitor for RowTrackingVisitor {
         let mut current_hwm = self.row_id_high_water_mark;
         for i in 0..row_count {
             let num_records: i64 = getters[0].get_opt(i, NUM_RECORDS)?.ok_or_else(|| {
-                Error::InternalError(format!(
+                KernelError::InternalError(format!(
                     "{NUM_RECORDS} must be present in Add actions when row tracking is enabled."
                 ))
             })?;
@@ -152,23 +133,20 @@ impl RowVisitor for RowTrackingVisitor {
 
 #[cfg(test)]
 mod tests {
+    use derive_more::Constructor;
+
     use super::*;
     use crate::engine_data::GetData;
     use crate::unit_test_utils::assert_result_error_with_message;
 
     /// Mock GetData implementation for testing
+    #[derive(Constructor)]
     struct MockGetData {
         num_records_values: Vec<Option<i64>>,
     }
 
-    impl MockGetData {
-        fn new(num_records_values: Vec<Option<i64>>) -> Self {
-            Self { num_records_values }
-        }
-    }
-
     impl<'a> GetData<'a> for MockGetData {
-        fn get_long(&'a self, row_index: usize, field_name: &str) -> DeltaResult<Option<i64>> {
+        fn get_long(&'a self, row_index: usize, field_name: &str) -> Result<Option<i64>> {
             if field_name == NUM_RECORDS {
                 Ok(self.num_records_values.get(row_index).copied().flatten())
             } else {
@@ -182,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_basic_functionality() -> DeltaResult<()> {
+    fn test_visit_basic_functionality() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(None, Some(1));
         let num_records_mock = MockGetData::new(vec![Some(10), Some(5), Some(20)]);
         let getters = create_getters(&num_records_mock);
@@ -200,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_with_negative_high_water_mark() -> DeltaResult<()> {
+    fn test_visit_with_negative_high_water_mark() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(-5), Some(1));
         let num_records_mock = MockGetData::new(vec![Some(3), Some(2)]);
         let getters = create_getters(&num_records_mock);
@@ -218,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_with_zero_records() -> DeltaResult<()> {
+    fn test_visit_with_zero_records() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(10), Some(1));
         let num_records_mock = MockGetData::new(vec![Some(0), Some(0), Some(5)]);
         let getters = create_getters(&num_records_mock);
@@ -236,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_empty_batch() -> DeltaResult<()> {
+    fn test_visit_empty_batch() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(42), None);
         let num_records_mock = MockGetData::new(vec![]);
         let getters = create_getters(&num_records_mock);
@@ -252,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_multiple_batches() -> DeltaResult<()> {
+    fn test_visit_multiple_batches() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(0), Some(2));
 
         // First batch
@@ -281,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_wrong_getter_count() -> DeltaResult<()> {
+    fn test_visit_wrong_getter_count() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(0), None);
         let wrong_getters: Vec<&dyn GetData<'_>> = vec![]; // No getters instead of expected count
 
@@ -292,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_visit_missing_num_records() -> DeltaResult<()> {
+    fn test_visit_missing_num_records() -> Result<()> {
         let mut visitor = RowTrackingVisitor::new(Some(0), None);
         let num_records_mock = MockGetData::new(vec![None]); // Missing numRecords
         let getters = create_getters(&num_records_mock);
@@ -316,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_serialization_roundtrip() -> DeltaResult<()> {
+    fn test_serialization_roundtrip() -> Result<()> {
         let original = RowTrackingDomainMetadata::new(-42);
         let json = serde_json::to_string(&original)?;
         let deserialized: RowTrackingDomainMetadata = serde_json::from_str(&json)?;

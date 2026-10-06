@@ -11,7 +11,7 @@ use delta_kernel::expressions::Scalar;
 use delta_kernel::schema::schema_ref;
 use delta_kernel::transaction::create_table::create_table as create_table_txn;
 use delta_kernel::transaction::CommitResult;
-use delta_kernel::{DeltaResult, Snapshot};
+use delta_kernel::{Result, Snapshot};
 use tempfile::tempdir;
 use test_utils::{
     begin_transaction, create_default_engine, setup_test_tables, write_batch_to_table,
@@ -21,7 +21,7 @@ use url::Url;
 use crate::common::write_utils::get_simple_int_schema;
 
 #[tokio::test]
-async fn test_post_commit_snapshot_create_then_insert() -> DeltaResult<()> {
+async fn test_post_commit_snapshot_create_then_insert() -> Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
 
     let temp_dir = tempdir().unwrap();
@@ -35,7 +35,7 @@ async fn test_post_commit_snapshot_create_then_insert() -> DeltaResult<()> {
         .commit(engine.as_ref())?;
 
     let mut current_snapshot = match create_result {
-        CommitResult::CommittedTransaction(committed) => {
+        CommitResult::Committed(committed) => {
             assert_eq!(committed.commit_version(), 0);
             // CREATE TABLE is the first commit: 1 commit since last checkpoint/compaction
             assert_eq!(committed.post_commit_stats().commits_since_checkpoint, 1);
@@ -60,7 +60,7 @@ async fn test_post_commit_snapshot_create_then_insert() -> DeltaResult<()> {
             begin_transaction(current_snapshot.clone(), engine.as_ref())?.with_engine_info("test");
 
         match txn.commit(engine.as_ref())? {
-            CommitResult::CommittedTransaction(committed) => {
+            CommitResult::Committed(committed) => {
                 let post_snapshot = committed
                     .post_commit_snapshot()
                     .expect("should have post_commit_snapshot");
@@ -121,7 +121,7 @@ async fn test_write_parquet_succeed_with_logical_partition_names(
 }
 
 #[tokio::test]
-async fn test_write_parquet_rejects_partitioned_write_context_on_unpartitioned_table(
+async fn test_write_context_builder_rejects_partition_values_on_unpartitioned_table(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let schema = get_simple_int_schema();
 
@@ -130,13 +130,16 @@ async fn test_write_parquet_rejects_partitioned_write_context_on_unpartitioned_t
     {
         let snapshot = Snapshot::builder_for(table_url.clone()).build(&engine)?;
         let txn = begin_transaction(snapshot.clone(), &engine)?.with_engine_info("test");
+        let write_state = txn.write_state()?;
 
-        let result = txn.partitioned_write_context(HashMap::from([(
-            "nonexistent".to_string(),
-            Scalar::String("val".into()),
-        )]));
-        let err =
-            result.expect_err("should fail with partitioned_write_context on unpartitioned table");
+        let result = write_state
+            .write_context_builder()
+            .with_partition_values(HashMap::from([(
+                "nonexistent".to_string(),
+                Scalar::String("val".into()),
+            )]))
+            .build();
+        let err = result.expect_err("partition values should fail on an unpartitioned table");
         let err_msg = err.to_string();
         assert!(
             err_msg.contains("table is not partitioned"),

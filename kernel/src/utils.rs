@@ -1,5 +1,6 @@
 //! Various utility functions/macros used throughout the kernel
 use std::borrow::Cow;
+use std::marker::PhantomData;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -8,7 +9,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use delta_kernel_derive::internal_api;
 use url::Url;
 
-use crate::{DeltaResult, Error};
+use crate::{KernelError, KernelResult, Result};
+
+/// Phantom type parameter `T`: The containing type mentions but does not own any instance of `T`.
+///
+/// It is covariant in `T`, and Send+Sync even if `T` is not. Use this instead of [`PhantomData<T>`]
+/// when `T` is only a compile-time parameter, because [`PhantomData<T>`] tells the compiler that
+/// the containing type owns and may drop a `T`, and additionally makes Send/Sync follow `T`.
+///
+/// A generic alias cannot be named as a constructor, so construct values with
+/// [`PhantomType::default`] instead of `PhantomType`.
+pub(crate) type PhantomType<T> = PhantomData<fn() -> *const T>;
 
 /// convenient way to return an error if a condition isn't true
 macro_rules! require {
@@ -60,7 +71,7 @@ impl<I: IntoIterator, T: FromIterator<I::Item>> CollectInto<T> for I {
 /// like `/local/paths`, and even `../relative/paths`.
 #[allow(unused)]
 #[internal_api]
-pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> DeltaResult<Url> {
+pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> Result<Url> {
     let uri = uri.as_ref();
     let uri_type = resolve_uri_type(uri)?;
     let url = match uri_type {
@@ -68,25 +79,25 @@ pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> DeltaResult<Url> {
         UriType::LocalPath(path) => {
             if !path.exists() {
                 // When we support writes, create a directory if we can
-                return Err(Error::InvalidTableLocation(format!(
+                return Err(KernelError::InvalidTableLocation(format!(
                     "Path does not exist: {path:?}"
                 )));
             }
             if !path.is_dir() {
-                return Err(Error::InvalidTableLocation(format!(
+                return Err(KernelError::InvalidTableLocation(format!(
                     "{path:?} is not a directory"
                 )));
             }
             let path = std::fs::canonicalize(path).map_err(|err| {
                 let msg = format!("Invalid table location: {uri} Error: {err:?}");
-                Error::InvalidTableLocation(msg)
+                KernelError::InvalidTableLocation(msg)
             })?;
             Url::from_directory_path(path.clone()).map_err(|_| {
                 let msg = format!(
                     "Could not construct a URL from canonicalized path: {path:?}.\n\
                      Something must be very wrong with the table path."
                 );
-                Error::InvalidTableLocation(msg)
+                KernelError::InvalidTableLocation(msg)
             })?
         }
         // wasm32-unknown-unknown has no filesystem, so local paths (and `file://` URIs) are
@@ -114,7 +125,7 @@ enum UriType {
 ///
 /// Will return an error if the path is not valid.
 #[allow(unused)]
-fn resolve_uri_type(table_uri: impl AsRef<str>) -> DeltaResult<UriType> {
+fn resolve_uri_type(table_uri: impl AsRef<str>) -> KernelResult<UriType> {
     let table_uri = table_uri.as_ref();
     let table_uri = if table_uri.ends_with('/') {
         Cow::Borrowed(table_uri)
@@ -128,8 +139,9 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> DeltaResult<UriType> {
             {
                 Ok(UriType::LocalPath(
                     url.to_file_path()
-                        .map_err(|_| Error::invalid_table_location(table_uri))?,
-                ))
+                        .map_err(|_| {
+                KernelError::invalid_table_location(table_uri)
+                })?))
             }
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
@@ -162,10 +174,10 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> DeltaResult<UriType> {
 }
 
 /// Returns the current time as a Duration since Unix epoch.
-pub(crate) fn current_time_duration() -> DeltaResult<Duration> {
+pub(crate) fn current_time_duration() -> KernelResult<Duration> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| Error::generic(format!("System time before Unix epoch: {e}")))
+        .map_err(|e| KernelError::generic(format!("System time before Unix epoch: {e}")))
 }
 
 /// A drop-in replacement for [`std::time::Instant`] that also works on wasm32-unknown-unknown,
@@ -178,10 +190,10 @@ pub(crate) use std::time::Instant;
 pub(crate) use web_time::Instant;
 
 /// Returns the current time in milliseconds since Unix epoch.
-pub(crate) fn current_time_ms() -> DeltaResult<i64> {
+pub(crate) fn current_time_ms() -> KernelResult<i64> {
     let duration = current_time_duration()?;
     i64::try_from(duration.as_millis())
-        .map_err(|_| Error::generic("Current timestamp exceeds i64 millisecond range"))
+        .map_err(|_| KernelError::generic("Current timestamp exceeds i64 millisecond range"))
 }
 
 /// Extension trait for folding zero or one value from an [`Option`] into a base value.

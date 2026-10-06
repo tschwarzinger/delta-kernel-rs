@@ -63,7 +63,7 @@ async fn write_data_to_table(
 
     let result = txn.commit(engine.as_ref())?;
     match result {
-        CommitResult::CommittedTransaction(committed) => Ok(committed.commit_version()),
+        CommitResult::Committed(committed) => Ok(committed.commit_version()),
         _ => panic!("Transaction should be committed"),
     }
 }
@@ -80,9 +80,9 @@ async fn add_files_to_transaction(
         vec![Arc::new(Int32Array::from(values))],
     )?;
 
-    let write_context = Arc::new(txn.unpartitioned_write_context().unwrap());
+    let write_context = txn.write_state()?.write_context_builder().build()?;
     let add_files_metadata = engine
-        .write_parquet(&ArrowEngineData::new(data), write_context.as_ref())
+        .write_parquet(&ArrowEngineData::new(data), &write_context)
         .await?;
     txn.add_files(add_files_metadata);
     Ok(())
@@ -132,7 +132,7 @@ async fn test_cdf_write_all_removes_succeeds() -> Result<(), Box<dyn std::error:
     // This should succeed - remove-only transactions are allowed with CDF
     let result = txn.commit(engine.as_ref())?;
     match result {
-        CommitResult::CommittedTransaction(committed) => {
+        CommitResult::Committed(committed) => {
             assert_eq!(committed.commit_version(), 2);
         }
         _ => panic!("Transaction should be committed"),
@@ -174,7 +174,7 @@ async fn test_cdf_write_mixed_no_data_change_succeeds() -> Result<(), Box<dyn st
     // This should succeed - mixed operations are allowed when dataChange=false
     let result = txn.commit(engine.as_ref())?;
     match result {
-        CommitResult::CommittedTransaction(committed) => {
+        CommitResult::Committed(committed) => {
             assert_eq!(committed.commit_version(), 2);
         }
         _ => panic!("Transaction should be committed"),

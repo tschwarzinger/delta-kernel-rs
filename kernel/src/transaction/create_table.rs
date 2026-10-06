@@ -12,7 +12,7 @@
 //! use delta_kernel::committer::FileSystemCommitter;
 //! use std::sync::Arc;
 //! # use delta_kernel::Engine;
-//! # fn example(engine: &dyn Engine) -> delta_kernel::DeltaResult<()> {
+//! # fn example(engine: &dyn Engine) -> delta_kernel::Result<()> {
 //!
 //! let schema = Arc::new(StructType::try_new(vec![
 //!     StructField::nullable("id", DataType::INTEGER),
@@ -31,7 +31,6 @@
 // and for tests. Also allow dead_code since these are used by integration tests.
 #![allow(unreachable_pub, dead_code)]
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 // Re-export the builder so callers can still access it from this module path.
@@ -42,9 +41,12 @@ use crate::expressions::ColumnName;
 use crate::metrics::MetricId;
 use crate::schema::SchemaRef;
 use crate::table_configuration::TableConfiguration;
+use crate::table_features::{
+    validate_iceberg_compat_if_needed, IcebergCompatValidationContext, V2_VALIDATOR,
+};
 use crate::transaction::{CreateTable, Transaction};
-use crate::utils::current_time_ms;
-use crate::DeltaResult;
+use crate::utils::{current_time_ms, PhantomType};
+use crate::KernelResult;
 
 /// A type alias for create-table transactions.
 ///
@@ -70,7 +72,7 @@ use crate::DeltaResult;
 /// use delta_kernel::committer::FileSystemCommitter;
 /// use std::sync::Arc;
 /// # use delta_kernel::Engine;
-/// # fn example(engine: &dyn Engine) -> delta_kernel::DeltaResult<()> {
+/// # fn example(engine: &dyn Engine) -> delta_kernel::Result<()> {
 ///
 /// let schema = Arc::new(StructType::try_new(vec![
 ///     StructField::nullable("id", DataType::INTEGER),
@@ -105,7 +107,7 @@ pub type CreateTableTransaction = Transaction<CreateTable>;
 /// use test_utils::delta_kernel_default_engine::DefaultEngineBuilder;
 /// use test_utils::delta_kernel_default_engine::storage::store_from_url;
 ///
-/// # fn main() -> delta_kernel::DeltaResult<()> {
+/// # fn main() -> delta_kernel::Result<()> {
 /// let schema = Arc::new(StructType::try_new([
 ///     StructField::nullable("id", DataType::INTEGER),
 ///     StructField::nullable("name", DataType::STRING),
@@ -145,7 +147,13 @@ impl CreateTableTransaction {
         system_domain_metadata: Vec<DomainMetadata>,
         clustering_columns: Option<Vec<ColumnName>>,
         correlation_id: Option<Arc<str>>,
-    ) -> DeltaResult<Self> {
+    ) -> KernelResult<Self> {
+        validate_iceberg_compat_if_needed(
+            &effective_table_config,
+            &V2_VALIDATOR,
+            IcebergCompatValidationContext::Write,
+        )?;
+
         let span = tracing::info_span!(
             "txn",
             path = %effective_table_config.table_root(),
@@ -162,21 +170,27 @@ impl CreateTableTransaction {
             committer,
             operation: Some("CREATE TABLE".to_string()),
             engine_info: Some(engine_info),
+            operation_parameters: None,
+            operation_metrics: None,
             add_files_metadata: vec![],
             remove_files_metadata: vec![],
             set_transactions: vec![],
             commit_timestamp: current_time_ms()?,
             user_domain_metadata_additions: vec![],
             system_domain_metadata_additions: system_domain_metadata,
+            provided_row_tracking_high_water_mark: None,
             user_domain_removals: vec![],
             data_change: true,
             column_defaults_acknowledged: false,
+            row_tracking_preservation_acknowledged: false,
             engine_commit_info: None,
             is_blind_append: false,
             dv_matched_files: vec![],
             num_dv_updates: 0,
+            #[cfg(feature = "adaptive-metadata-in-dev")]
+            manifest_write: None,
             physical_clustering_columns: clustering_columns,
-            _state: PhantomData,
+            _state: PhantomType::default(),
         })
     }
 }

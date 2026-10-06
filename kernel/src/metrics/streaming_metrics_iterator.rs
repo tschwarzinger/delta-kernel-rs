@@ -13,7 +13,8 @@ use bytes::Bytes;
 
 use crate::metrics::events::STORAGE_SPAN;
 use crate::utils::Instant;
-use crate::{DeltaResult, FileMeta};
+use crate::utils::PhantomType;
+use crate::{FileMeta, KernelResult};
 
 /// Counts items observed and emits a `"storage"` span on drop. The type parameter
 /// `T` selects whether bytes are counted: `Bytes` counts bytes, `FileMeta` does not.
@@ -23,7 +24,7 @@ pub(crate) struct MetricsIterator<I, T> {
     start: Instant,
     num_files: u64,
     bytes_read: u64,
-    _phantom: PhantomData<T>,
+    _phantom: PhantomType<T>,
 }
 
 impl<I, T> MetricsIterator<I, T> {
@@ -34,7 +35,7 @@ impl<I, T> MetricsIterator<I, T> {
             start,
             num_files: 0,
             bytes_read: 0,
-            _phantom: PhantomData,
+            _phantom: PhantomType::default(),
         }
     }
 
@@ -82,7 +83,7 @@ pub(crate) fn emit_storage_span(
 
 impl<I> Iterator for MetricsIterator<I, FileMeta>
 where
-    I: Iterator<Item = DeltaResult<FileMeta>>,
+    I: Iterator<Item = KernelResult<FileMeta>>,
 {
     type Item = I::Item;
 
@@ -97,7 +98,7 @@ where
 
 impl<I> Iterator for MetricsIterator<I, Bytes>
 where
-    I: Iterator<Item = DeltaResult<Bytes>>,
+    I: Iterator<Item = KernelResult<Bytes>>,
 {
     type Item = I::Item;
 

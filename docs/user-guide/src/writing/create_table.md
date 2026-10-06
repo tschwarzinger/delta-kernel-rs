@@ -18,8 +18,8 @@ The `create_table` function returns a builder that you configure and then commit
 # use delta_kernel_default_engine::storage::store_from_url;
 # use delta_kernel::schema::{DataType, StructField, StructType};
 # use delta_kernel::transaction::create_table::create_table;
-# use delta_kernel::DeltaResult;
-# fn example() -> DeltaResult<()> {
+# use delta_kernel::Result;
+# fn example() -> Result<()> {
 # let url = delta_kernel::try_parse_uri("/tmp/table")?;
 # let engine = DefaultEngine::builder(store_from_url(&url)?).build();
 let schema = Arc::new(StructType::try_new([
@@ -49,8 +49,8 @@ Schemas are built from `StructField`s, each with a name, data type, and nullabil
 
 ```rust,no_run
 # extern crate delta_kernel;
-# use delta_kernel::DeltaResult;
-# fn example() -> DeltaResult<()> {
+# use delta_kernel::Result;
+# fn example() -> Result<()> {
 use std::sync::Arc;
 use delta_kernel::schema::{ArrayType, DataType, MapType, StructField, StructType};
 
@@ -101,8 +101,8 @@ You can set custom application properties on the table:
 # use delta_kernel_default_engine::storage::store_from_url;
 # use delta_kernel::schema::{DataType, StructField, StructType};
 # use delta_kernel::transaction::create_table::create_table;
-# use delta_kernel::DeltaResult;
-# fn example() -> DeltaResult<()> {
+# use delta_kernel::Result;
+# fn example() -> Result<()> {
 # let url = delta_kernel::try_parse_uri("/tmp/table")?;
 # let engine = DefaultEngine::builder(store_from_url(&url)?).build();
 # let schema = Arc::new(StructType::try_new([
@@ -138,8 +138,8 @@ layout for queries that filter on the clustering columns:
 # use delta_kernel::schema::{DataType, StructField, StructType};
 # use delta_kernel::transaction::create_table::create_table;
 # use delta_kernel::transaction::data_layout::DataLayout;
-# use delta_kernel::DeltaResult;
-# fn example() -> DeltaResult<()> {
+# use delta_kernel::Result;
+# fn example() -> Result<()> {
 # let url = delta_kernel::try_parse_uri("/tmp/table")?;
 # let engine = DefaultEngine::builder(store_from_url(&url)?).build();
 let schema = Arc::new(StructType::try_new([
@@ -194,8 +194,8 @@ entire directories when filtering on those columns.
 # use delta_kernel::schema::{DataType, StructField, StructType};
 # use delta_kernel::transaction::create_table::create_table;
 # use delta_kernel::transaction::data_layout::DataLayout;
-# use delta_kernel::DeltaResult;
-# fn example() -> DeltaResult<()> {
+# use delta_kernel::Result;
+# fn example() -> Result<()> {
 # let url = delta_kernel::try_parse_uri("/tmp/table")?;
 # let engine = DefaultEngine::builder(store_from_url(&url)?).build();
 let schema = Arc::new(StructType::try_new([
@@ -259,22 +259,22 @@ persisted:
 
 ```rust,ignore
 match txn.commit(&engine)? {
-    CommitResult::CommittedTransaction(committed) => {
+    CommitResult::Committed(committed) => {
         println!("Created table at version {}", committed.commit_version());
     }
-    CommitResult::ConflictedTransaction(_) => {
+    CommitResult::Conflicted(_) => {
         // Another writer created the table concurrently
     }
-    CommitResult::RetryableTransaction(retry) => {
+    CommitResult::Retryable(retry) => {
         // Transient I/O error. Safe to retry.
         println!("Retryable error: {}", retry.error);
     }
 }
 ```
 
-For table creation, `CommittedTransaction` is the expected result (version 0).
-`ConflictedTransaction` means another process created the table between your existence
-check and commit. `RetryableTransaction` indicates a transient error.
+For table creation, `CommitResult::Committed` is the expected result (version 0).  `Conflicted`
+means another process created the table between your existence check and commit. `Retryable`
+indicates a transient error.
 
 ## Validations
 

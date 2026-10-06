@@ -27,8 +27,8 @@ use delta_kernel::parquet::schema::types::Type as ParquetType;
 use delta_kernel::path::ParsedLogPath;
 use delta_kernel::schema::{schema_ref, SchemaRef, StructType};
 use delta_kernel::table_features::ColumnMappingMode;
-use delta_kernel::transaction::{CommitResult, Transaction, WriteContext};
-use delta_kernel::{DeltaResult, Engine, Snapshot, Version};
+use delta_kernel::transaction::{BoundWriteContext, CommitResult, Transaction};
+use delta_kernel::{Engine, Result, Snapshot, Version};
 use serde_json::json;
 use test_utils::delta_kernel_default_engine::executor::tokio::TokioBackgroundExecutor;
 use test_utils::delta_kernel_default_engine::DefaultEngine;
@@ -216,7 +216,7 @@ pub async fn write_data_and_check_result_and_stats(
         .with_data_change(true);
 
     // create two new arrow record batches to append
-    let append_data = [[1, 2, 3], [4, 5, 6]].map(|data| -> DeltaResult<_> {
+    let append_data = [[1, 2, 3], [4, 5, 6]].map(|data| -> Result<_> {
         let data = RecordBatch::try_new(
             Arc::new(schema.as_ref().try_into_arrow()?),
             vec![Arc::new(Int32Array::from(data.to_vec()))],
@@ -225,7 +225,7 @@ pub async fn write_data_and_check_result_and_stats(
     });
 
     // write data out by spawning async tasks to simulate executors
-    let write_context = Arc::new(txn.unpartitioned_write_context().unwrap());
+    let write_context = Arc::new(txn.write_state()?.write_context_builder().build()?);
     let tasks = append_data.into_iter().map(|data| {
         // arc clones
         let engine = engine.clone();
@@ -244,7 +244,7 @@ pub async fn write_data_and_check_result_and_stats(
 
     // commit!
     match txn.commit(engine.as_ref())? {
-        CommitResult::CommittedTransaction(committed) => {
+        CommitResult::Committed(committed) => {
             assert_eq!(committed.commit_version(), expected_since_commit as Version);
             assert_eq!(
                 committed.post_commit_stats().commits_since_checkpoint,
@@ -464,7 +464,7 @@ pub fn sequential_dv_descriptors(
 pub fn get_scan_files(
     snapshot: Arc<Snapshot>,
     engine: &dyn delta_kernel::Engine,
-) -> DeltaResult<Vec<FilteredEngineData>> {
+) -> Result<Vec<FilteredEngineData>> {
     let scan = snapshot.scan_builder().build()?;
     let all_scan_metadata: Vec<_> = scan.scan_metadata(engine)?.collect::<Result<Vec<_>, _>>()?;
 
@@ -477,7 +477,7 @@ pub fn get_scan_files(
 /// Serialize a deletion vector, write it to the object store, and return its descriptor.
 pub async fn write_deletion_vector_to_store(
     store: &Arc<dyn ObjectStore>,
-    write_context: &WriteContext,
+    write_context: &BoundWriteContext,
     dv: KernelDeletionVector,
     prefix: &str,
 ) -> Result<DeletionVectorDescriptor, Box<dyn std::error::Error>> {

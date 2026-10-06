@@ -6,15 +6,16 @@ use std::sync::Arc;
 
 use delta_kernel::expressions::{
     col, column_name, column_pred, lit, null_lit, ArrayData, BinaryExpressionOp, BinaryPredicateOp,
-    Expression as Expr, ExpressionStructPatchBuilder, MapData, OpaqueExpressionOp,
-    OpaquePredicateOp, Predicate as Pred, Scalar, ScalarExpressionEvaluator, StructData,
+    Expression as Expr, ExpressionStructPatchBuilder, MapData, MapToStructOptions,
+    OpaqueExpressionOp, OpaquePredicateOp, Predicate as Pred, Scalar, ScalarExpressionEvaluator,
+    StructData,
 };
 use delta_kernel::kernel_predicates::{
     DirectDataSkippingPredicateEvaluator, DirectPredicateEvaluator,
     IndirectDataSkippingPredicateEvaluator,
 };
 use delta_kernel::schema::{ArrayType, DataType, MapType, StructField, StructType};
-use delta_kernel::DeltaResult;
+use delta_kernel::Result;
 
 use crate::expressions::{SharedExpression, SharedPredicate};
 use crate::handle::Handle;
@@ -30,7 +31,7 @@ impl OpaqueExpressionOp for OpaqueTestOp {
         &self,
         _eval_expr: &ScalarExpressionEvaluator<'_>,
         _exprs: &[Expr],
-    ) -> DeltaResult<Scalar> {
+    ) -> Result<Scalar> {
         unimplemented!()
     }
 }
@@ -46,7 +47,7 @@ impl OpaquePredicateOp for OpaqueTestOp {
         _evaluator: &DirectPredicateEvaluator<'_>,
         _exprs: &[Expr],
         _inverted: bool,
-    ) -> DeltaResult<Option<bool>> {
+    ) -> Result<Option<bool>> {
         unimplemented!()
     }
 
@@ -158,7 +159,11 @@ pub unsafe extern "C" fn get_testing_kernel_expression() -> Handle<SharedExpress
         Expr::struct_from([lit(5_i32), lit(20_i64)]),
         Expr::opaque(OpaqueTestOp("foo".to_string()), vec![lit(42), lit(1.111)]),
         Expr::unknown("mystery"),
-        Expr::map_to_struct(col!("pv")),
+        Expr::map_to_struct(col!("pv"), MapToStructOptions::default()),
+        Expr::map_to_struct(
+            col!("pv"),
+            MapToStructOptions::default().with_timestamp_timezone("America/Los_Angeles"),
+        ),
         Expr::coalesce([col!("col"), lit(0_i32)]),
         Expr::array([lit(1_i32), lit(2_i32)]),
     ];
@@ -254,7 +259,11 @@ pub unsafe extern "C" fn get_simple_testing_kernel_expression() -> Handle<Shared
         Expr::binary(BinaryExpressionOp::Multiply, lit(5), lit(6)),
         Expr::binary(BinaryExpressionOp::Divide, lit(100), lit(4)),
         Expr::struct_from([lit(1_i32), lit(2_i64), lit(3.0_f64)]),
-        Expr::map_to_struct(col!("partitionValues")),
+        Expr::map_to_struct(col!("partitionValues"), MapToStructOptions::default()),
+        Expr::map_to_struct(
+            col!("partitionValues"),
+            MapToStructOptions::default().with_timestamp_timezone("America/Los_Angeles"),
+        ),
     ];
     Arc::new(Expr::struct_from(sub_exprs)).into()
 }

@@ -1,23 +1,21 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use derive_more::Constructor;
 use futures::StreamExt as _;
 use url::Url;
 
 use super::{put_bytes, resolve_scope};
 use crate::object_store::path::Path;
 use crate::object_store::{DynObjectStore, ObjectStoreExt as _};
-use crate::{DeltaResult, Error, FileMeta, FileSlice, StorageHandler};
+use crate::{FileMeta, FileSlice, KernelError, Result, ResultIteratorStatic, StorageHandler};
 
+#[derive(Constructor)]
 pub(crate) struct SyncStorageHandler {
     store: Option<Arc<DynObjectStore>>,
 }
 
 impl SyncStorageHandler {
-    pub(crate) fn new(store: Option<Arc<DynObjectStore>>) -> Self {
-        Self { store }
-    }
-
     /// The backing store, or `None` for the per-URL [`LocalFileSystem`] fallback.
     ///
     /// [`LocalFileSystem`]: crate::object_store::local::LocalFileSystem
@@ -27,11 +25,11 @@ impl SyncStorageHandler {
     }
 }
 
+// This handler collects eagerly under `block_on`, so it cannot interrupt that I/O after it starts.
+// It relies on the default `*_with_cancellation` methods to check before delegation and before
+// pulling the resulting in-memory iterator.
 impl StorageHandler for SyncStorageHandler {
-    fn list_from(
-        &self,
-        url_path: &Url,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<FileMeta>>>> {
+    fn list_from(&self, url_path: &Url) -> Result<ResultIteratorStatic<FileMeta>> {
         let (store, base_url, offset) = resolve_scope(self.store.as_ref(), url_path)?;
 
         // For directory URLs, prefix == offset and the offset acts as a lower bound that still
@@ -59,7 +57,7 @@ impl StorageHandler for SyncStorageHandler {
         let iter = metas.into_iter().map(move |meta| {
             let location = base_url
                 .join(meta.location.as_ref())
-                .map_err(|e| Error::generic(format!("Failed to construct URL: {e}")))?;
+                .map_err(|e| KernelError::generic(format!("Failed to construct URL: {e}")))?;
             Ok(FileMeta {
                 location,
                 last_modified: meta.last_modified.timestamp_millis(),
@@ -69,12 +67,9 @@ impl StorageHandler for SyncStorageHandler {
         Ok(Box::new(iter))
     }
 
-    fn read_files(
-        &self,
-        files: Vec<FileSlice>,
-    ) -> DeltaResult<Box<dyn Iterator<Item = DeltaResult<Bytes>>>> {
+    fn read_files(&self, files: Vec<FileSlice>) -> Result<ResultIteratorStatic<Bytes>> {
         let store = self.store.clone();
-        let results: Vec<DeltaResult<Bytes>> = files
+        let results: Vec<Result<Bytes>> = files
             .into_iter()
             .map(|(url, _range_opt)| {
                 let (s, _, path) = resolve_scope(store.as_ref(), &url)?;
@@ -85,15 +80,15 @@ impl StorageHandler for SyncStorageHandler {
         Ok(Box::new(results.into_iter()))
     }
 
-    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> DeltaResult<()> {
+    fn put(&self, path: &Url, data: Bytes, overwrite: bool) -> Result<()> {
         put_bytes(self.store.as_ref(), path, data, overwrite)
     }
 
-    fn copy_atomic(&self, _src: &Url, _dest: &Url) -> DeltaResult<()> {
+    fn copy_atomic(&self, _src: &Url, _dest: &Url) -> Result<()> {
         unimplemented!("SyncStorageHandler does not implement copy");
     }
 
-    fn head(&self, url: &Url) -> DeltaResult<FileMeta> {
+    fn head(&self, url: &Url) -> Result<FileMeta> {
         let (store, _, path) = resolve_scope(self.store.as_ref(), url)?;
         let meta = futures::executor::block_on(store.head(&path))?;
         Ok(FileMeta {
@@ -103,7 +98,7 @@ impl StorageHandler for SyncStorageHandler {
         })
     }
 
-    fn delete(&self, url: &Url) -> DeltaResult<()> {
+    fn delete(&self, url: &Url) -> Result<()> {
         let (store, _, path) = resolve_scope(self.store.as_ref(), url)?;
         match futures::executor::block_on(store.delete(&path)) {
             Ok(()) => Ok(()),
@@ -127,7 +122,7 @@ mod tests {
     use crate::object_store::memory::InMemory;
     use crate::object_store::ObjectStoreExt as _;
     use crate::utils::current_time_duration;
-    use crate::{Error, StorageHandler};
+    use crate::{KernelError, StorageHandler};
 
     /// generate json filenames that follow the spec (numbered padded to 20 chars)
     fn get_json_filename(index: usize) -> String {
@@ -276,7 +271,7 @@ mod tests {
         let url = Url::from_file_path(tmp_dir.path().join("missing.json")).unwrap();
         assert!(matches!(
             storage.head(&url).unwrap_err(),
-            Error::FileNotFound(_)
+            KernelError::FileNotFound(_)
         ));
     }
 
@@ -315,7 +310,7 @@ mod tests {
         let err = storage
             .put(&url, bytes::Bytes::from("second"), false)
             .unwrap_err();
-        assert!(matches!(err, Error::FileAlreadyExists(_)));
+        assert!(matches!(err, KernelError::FileAlreadyExists(_)));
 
         // With overwrite, it should succeed.
         storage
@@ -341,7 +336,7 @@ mod tests {
 
         assert!(matches!(
             storage.head(&url).unwrap_err(),
-            Error::FileNotFound(_)
+            KernelError::FileNotFound(_)
         ));
     }
 
@@ -353,7 +348,7 @@ mod tests {
 
         assert!(matches!(
             storage.head(&url).unwrap_err(),
-            Error::FileNotFound(_)
+            KernelError::FileNotFound(_)
         ));
         storage.delete(&url).unwrap();
     }

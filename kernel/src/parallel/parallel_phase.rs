@@ -14,7 +14,7 @@ use itertools::Itertools;
 use crate::log_replay::{ActionsBatch, ParallelLogReplayProcessor};
 use crate::scan::CHECKPOINT_READ_SCHEMA;
 use crate::schema::SchemaRef;
-use crate::{DeltaResult, Engine, EngineData, FileMeta};
+use crate::{Engine, EngineData, FileMeta, KernelResultIteratorStatic, Result};
 
 /// Processes checkpoint leaf files in parallel using a shared processor.
 ///
@@ -34,7 +34,7 @@ use crate::{DeltaResult, Engine, EngineData, FileMeta};
 #[internal_api]
 pub(crate) struct ParallelPhase<P: ParallelLogReplayProcessor> {
     processor: P,
-    leaf_checkpoint_reader: Box<dyn Iterator<Item = DeltaResult<ActionsBatch>>>,
+    leaf_checkpoint_reader: KernelResultIteratorStatic<ActionsBatch>,
 }
 
 impl<P: ParallelLogReplayProcessor> ParallelPhase<P> {
@@ -52,7 +52,7 @@ impl<P: ParallelLogReplayProcessor> ParallelPhase<P> {
         processor: P,
         leaf_files: Vec<FileMeta>,
         read_schema: SchemaRef,
-    ) -> DeltaResult<Self> {
+    ) -> Result<Self> {
         let leaf_checkpoint_reader = engine
             .parquet_handler()
             .read_parquet_files(&leaf_files, read_schema, None)?
@@ -76,7 +76,7 @@ impl<P: ParallelLogReplayProcessor> ParallelPhase<P> {
     #[allow(unused)]
     pub(crate) fn new_from_iter(
         processor: P,
-        iter: impl IntoIterator<Item = DeltaResult<Box<dyn EngineData>>> + 'static,
+        iter: impl IntoIterator<Item = Result<Box<dyn EngineData>>, IntoIter: Send + 'static>,
     ) -> Self {
         let leaf_checkpoint_reader = iter
             .into_iter()
@@ -105,12 +105,12 @@ impl<P: ParallelLogReplayProcessor> ParallelPhase<P> {
 /// the sequential phase) and returns the processed output.
 ///
 /// # Errors
-/// Returns `DeltaResult` errors for:
+/// Returns `Result` errors for:
 /// - File reading failures
 /// - Parquet parsing errors
 /// - Processing errors from the processor
 impl<P: ParallelLogReplayProcessor> Iterator for ParallelPhase<P> {
-    type Item = DeltaResult<P::Output>;
+    type Item = Result<P::Output>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.leaf_checkpoint_reader
@@ -164,7 +164,7 @@ mod tests {
         store: &Arc<InMemory>,
         path: &str,
         data: Box<dyn EngineData>,
-    ) -> DeltaResult<()> {
+    ) -> Result<()> {
         let batch = ArrowEngineData::try_from_engine_data(data)?;
         let record_batch = batch.record_batch();
 
@@ -195,7 +195,7 @@ mod tests {
     fn create_processor_with_seen_files(
         engine: &dyn crate::Engine,
         seen_paths: &[&str],
-    ) -> DeltaResult<ScanLogReplayProcessor> {
+    ) -> Result<ScanLogReplayProcessor> {
         let state_info = Arc::new(get_simple_state_info(test_schema(), vec![])?);
 
         let seen_file_keys: HashSet<FileActionKey> = seen_paths
@@ -229,7 +229,7 @@ mod tests {
         add_paths: &[&str],
         seen_paths: &[&str],
         expected_paths: &[&str],
-    ) -> DeltaResult<()> {
+    ) -> Result<()> {
         let store = Arc::new(InMemory::new());
         let url = Url::parse("memory:///")?;
         let engine = SyncEngine::new_with_store(store.clone());
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parallel_phase_empty_hashmap_all_adds_pass() -> DeltaResult<()> {
+    async fn test_parallel_phase_empty_hashmap_all_adds_pass() -> Result<()> {
         run_parallel_phase_test(
             &["file1.parquet", "file2.parquet", "file3.parquet"],
             &[],
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parallel_phase_with_removes_filters_matching_adds() -> DeltaResult<()> {
+    async fn test_parallel_phase_with_removes_filters_matching_adds() -> Result<()> {
         run_parallel_phase_test(
             &["file1.parquet", "file2.parquet", "file3.parquet"],
             &["file2.parquet"],
@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parallel_phase_all_files_removed() -> DeltaResult<()> {
+    async fn test_parallel_phase_all_files_removed() -> Result<()> {
         run_parallel_phase_test(
             &["removed1.parquet", "removed2.parquet"],
             &["removed1.parquet", "removed2.parquet"],
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parallel_phase_multiple_sidecars() -> DeltaResult<()> {
+    async fn test_parallel_phase_multiple_sidecars() -> Result<()> {
         // This test uses multiple sidecar files, so we need custom logic
         let store = Arc::new(InMemory::new());
         let url = Url::parse("memory:///")?;
@@ -384,7 +384,7 @@ mod tests {
         engine: &dyn crate::Engine,
         snapshot: &SnapshotRef,
         predicate: Option<PredicateRef>,
-    ) -> DeltaResult<Vec<String>> {
+    ) -> Result<Vec<String>> {
         let scan = snapshot
             .clone()
             .scan_builder()
@@ -407,7 +407,7 @@ mod tests {
         with_serde: bool,
         one_file_per_worker: bool,
         dispatcher: Option<tracing::Dispatch>,
-    ) -> DeltaResult<()> {
+    ) -> Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table(table_name)?;
 
         let expected_paths = get_expected_paths(engine.as_ref(), &snapshot, predicate.clone())?;
@@ -453,7 +453,7 @@ mod tests {
                         let state = final_state.clone();
                         let dispatcher = dispatcher.clone();
 
-                        thread::spawn(move || -> DeltaResult<Vec<String>> {
+                        thread::spawn(move || -> Result<Vec<String>> {
                             // Set the dispatcher in this thread to capture logs
                             let _guard = dispatcher.map(|d| tracing::dispatcher::set_default(&d));
 
@@ -508,7 +508,7 @@ mod tests {
     fn parallel_scan_metadata_phases_carry_correlation_id(
         #[case] with_serde: bool,
         #[case] expected_parallel: Option<&str>,
-    ) -> DeltaResult<()> {
+    ) -> Result<()> {
         // This table has checkpoint sidecars, so the sequential phase yields a parallel phase.
         let (engine, snapshot, _tempdir) = load_test_table("v2-checkpoints-json-with-sidecars")?;
 
@@ -583,7 +583,9 @@ mod tests {
     #[derive(Debug, Clone)]
     struct ExpectedMetrics {
         add_files_seen: u64,
-        active_add_files: u64,
+        add_files_seen_from_delta_files: u64,
+        selected_add_files: u64,
+        selected_add_files_bytes: u64,
         remove_files_seen: u64,
         non_file_actions: u64,
         predicate_filtered: u64,
@@ -616,8 +618,12 @@ mod tests {
 
         // Extract and verify counter values from Phase 1 (sequential log line)
         let add_files_seen = extract_metric(sequential_logs, "add_files_seen");
-        let active_add_files = extract_metric(sequential_logs, "active_add_files");
-        let remove_files_seen = extract_metric(sequential_logs, "remove_files_seen");
+        let add_files_seen_from_delta_files =
+            extract_metric(sequential_logs, "add_files_seen_from_delta_files");
+        let selected_add_files = extract_metric(sequential_logs, "selected_add_files");
+        let selected_add_files_bytes = extract_metric(sequential_logs, "selected_add_files_bytes");
+        let remove_files_seen =
+            extract_metric(sequential_logs, "remove_files_seen_from_delta_files");
         let non_file_actions = extract_metric(sequential_logs, "non_file_actions");
         let predicate_filtered = extract_metric(sequential_logs, "predicate_filtered");
 
@@ -626,8 +632,16 @@ mod tests {
             "Sequential add_files_seen mismatch"
         );
         assert_eq!(
-            active_add_files, sequential_expected.active_add_files,
-            "Sequential active_add_files mismatch"
+            add_files_seen_from_delta_files, sequential_expected.add_files_seen_from_delta_files,
+            "Sequential add_files_seen_from_delta_files mismatch"
+        );
+        assert_eq!(
+            selected_add_files, sequential_expected.selected_add_files,
+            "Sequential selected_add_files mismatch"
+        );
+        assert_eq!(
+            selected_add_files_bytes, sequential_expected.selected_add_files_bytes,
+            "Sequential selected_add_files_bytes mismatch"
         );
         assert_eq!(
             remove_files_seen, sequential_expected.remove_files_seen,
@@ -644,13 +658,16 @@ mod tests {
 
         // Verify timing metrics are present and parseable (values may be 0 for fast operations)
         let _dedup_time = extract_metric(sequential_logs, "dedup_visitor_time_ns");
+        let _action_transform_time = extract_metric(sequential_logs, "action_transform_time_ns");
         let _predicate_eval_time = extract_metric(sequential_logs, "predicate_eval_time_ns");
 
         // Verify Parallel metrics if expected
         if let Some(expected) = parallel_expected {
             // Accumulate totals across all parallel logs
             let mut total_add_files_seen = 0u64;
-            let mut total_active_add_files = 0u64;
+            let mut total_add_files_seen_from_delta_files = 0u64;
+            let mut total_selected_add_files = 0u64;
+            let mut total_selected_add_files_bytes = 0u64;
             let mut total_remove_files_seen = 0u64;
             let mut total_non_file_actions = 0u64;
             let mut total_predicate_filtered = 0u64;
@@ -662,13 +679,19 @@ mod tests {
 
                 // Extract and accumulate metrics
                 total_add_files_seen += extract_metric(remaining, "add_files_seen");
-                total_active_add_files += extract_metric(remaining, "active_add_files");
-                total_remove_files_seen += extract_metric(remaining, "remove_files_seen");
+                total_add_files_seen_from_delta_files +=
+                    extract_metric(remaining, "add_files_seen_from_delta_files");
+                total_selected_add_files += extract_metric(remaining, "selected_add_files");
+                total_selected_add_files_bytes +=
+                    extract_metric(remaining, "selected_add_files_bytes");
+                total_remove_files_seen +=
+                    extract_metric(remaining, "remove_files_seen_from_delta_files");
                 total_non_file_actions += extract_metric(remaining, "non_file_actions");
                 total_predicate_filtered += extract_metric(remaining, "predicate_filtered");
 
                 // Verify timing metrics are present and parseable in parallel phase
                 let _dedup_time = extract_metric(remaining, "dedup_visitor_time_ns");
+                let _action_transform_time = extract_metric(remaining, "action_transform_time_ns");
                 let _predicate_eval_time = extract_metric(remaining, "predicate_eval_time_ns");
 
                 search_start = absolute_pos + 1;
@@ -680,8 +703,16 @@ mod tests {
                 "Parallel add_files_seen mismatch"
             );
             assert_eq!(
-                total_active_add_files, expected.active_add_files,
-                "Parallel active_add_files mismatch"
+                total_add_files_seen_from_delta_files, expected.add_files_seen_from_delta_files,
+                "Parallel add_files_seen_from_delta_files mismatch"
+            );
+            assert_eq!(
+                total_selected_add_files, expected.selected_add_files,
+                "Parallel selected_add_files mismatch"
+            );
+            assert_eq!(
+                total_selected_add_files_bytes, expected.selected_add_files_bytes,
+                "Parallel selected_add_files_bytes mismatch"
             );
             assert_eq!(
                 total_remove_files_seen, expected.remove_files_seen,
@@ -711,14 +742,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 5,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 101,
-            active_add_files: 101,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 101,
+            selected_add_files_bytes: 54541,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -729,14 +764,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 5,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 101,
-            active_add_files: 101,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 101,
+            selected_add_files_bytes: 54541,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -751,16 +790,20 @@ mod tests {
         }),
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 5,
             predicate_filtered: 0,
         },
-        // Data skipping predicate filters 4 files (101 -> 97).
-        // add_files_seen counts files AFTER data skipping.
+        // Data skipping predicate filters 4 files (101 -> 97). add_files_seen counts all input
+        // Adds, while selected_add_files counts the Adds remaining after filtering and deduplication.
         expected_parallel_metrics: Some(ExpectedMetrics {
-            add_files_seen: 97,
-            active_add_files: 97,
+            add_files_seen: 101,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 97,
+            selected_add_files_bytes: 52616,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 4,
@@ -779,10 +822,12 @@ mod tests {
             Arc::new(Expr::eq(col!("letter"), lit("a")))
         }),
         expected_sequential_metrics: ExpectedMetrics {
-            // Columnar filter prunes all 4 non-matching files (b, c, e, null) before the
-            // visitor. The is_add guard protects Removes but not null-partition Adds.
-            add_files_seen: 2,
-            active_add_files: 2,
+            // Columnar filtering prunes all 4 non-matching files (b, c, e, null), but
+            // add_files_seen counts all 6 input Adds.
+            add_files_seen: 6,
+            add_files_seen_from_delta_files: 6,
+            selected_add_files: 2,
+            selected_add_files_bytes: 1502,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 4,
@@ -795,7 +840,9 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 3,
-            active_add_files: 3,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 3,
+            selected_add_files_bytes: 1481,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
@@ -807,14 +854,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 2,
-            active_add_files: 2,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 2,
+            selected_add_files_bytes: 1003,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -825,7 +876,9 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 3,
-            active_add_files: 3,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 3,
+            selected_add_files_bytes: 1481,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
@@ -837,14 +890,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 2,
-            active_add_files: 2,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 2,
+            selected_add_files_bytes: 1003,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -855,14 +912,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 4,
-            active_add_files: 4,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 4,
+            selected_add_files_bytes: 2009,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -873,14 +934,18 @@ mod tests {
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
             add_files_seen: 0,
-            active_add_files: 0,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 0,
+            selected_add_files_bytes: 0,
             remove_files_seen: 0,
             non_file_actions: 4,
             predicate_filtered: 0,
         },
         expected_parallel_metrics: Some(ExpectedMetrics {
             add_files_seen: 4,
-            active_add_files: 4,
+            add_files_seen_from_delta_files: 0,
+            selected_add_files: 4,
+            selected_add_files_bytes: 2009,
             remove_files_seen: 0,
             non_file_actions: 0,
             predicate_filtered: 0,
@@ -890,9 +955,11 @@ mod tests {
         path: "table-without-dv-small",
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
-            // This table has single-part checkpoint, completes in sequential phase
+            // This table has only commit files, so it completes in the sequential phase.
             add_files_seen: 1,
-            active_add_files: 1,
+            add_files_seen_from_delta_files: 1,
+            selected_add_files: 1,
+            selected_add_files_bytes: 548,
             remove_files_seen: 0,
             non_file_actions: 3,
             predicate_filtered: 0,
@@ -901,7 +968,7 @@ mod tests {
         expected_parallel_metrics: None,
     })]
     #[case::with_removes_deduplication(ParallelLogReplayCase {
-        // This table has removes that filter checkpoint adds, showing add_files_seen > active_add_files
+        // This table has removes that filter checkpoint adds, showing add_files_seen > selected_add_files
         path: "with_checkpoint_no_last_checkpoint",
         predicate: None,
         expected_sequential_metrics: ExpectedMetrics {
@@ -911,7 +978,9 @@ mod tests {
             //             then checkpoint (add B filtered by remove)
             // Result: 2 adds seen, 1 active (only C), 1 remove seen, B filtered by dedup
             add_files_seen: 2,
-            active_add_files: 1,
+            add_files_seen_from_delta_files: 1,
+            selected_add_files: 1,
+            selected_add_files_bytes: 1010,
             remove_files_seen: 1,
             non_file_actions: 4,
             predicate_filtered: 0,
@@ -922,7 +991,7 @@ mod tests {
         #[case] test_case: ParallelLogReplayCase,
         #[values(false, true)] with_serde: bool,
         #[values(false, true)] one_file_per_worker: bool,
-    ) -> DeltaResult<()> {
+    ) -> Result<()> {
         use test_utils::LoggingTest;
 
         // Set up log capture
@@ -952,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parallel_with_skip_stats() -> DeltaResult<()> {
+    fn test_parallel_with_skip_stats() -> Result<()> {
         let (engine, snapshot, _tempdir) = load_test_table("v2-checkpoints-json-with-sidecars")?;
 
         // Get expected paths using single-node scan_metadata with skip_stats=true
@@ -1025,7 +1094,7 @@ mod tests {
     /// Sequential-only tables (single-part checkpoint, no sidecars) emit exactly one
     /// `ScanMetadataCompleted` event with `ScanType::SequentialPhase` when `finish()` is called.
     #[test]
-    fn sequential_done_phase_emits_sequential_scan_metadata_completed_event() -> DeltaResult<()> {
+    fn sequential_done_phase_emits_sequential_scan_metadata_completed_event() -> Result<()> {
         let reporter = Arc::new(CapturingReporter::default());
         let _guard = install_thread_local_metrics_reporter(reporter.clone());
 
@@ -1062,7 +1131,7 @@ mod tests {
     /// `ScanMetadataCompleted` events. The `operation_id` must be the same on both
     /// events so callers can correlate them.
     #[test]
-    fn parallel_scan_emits_correlated_sequential_and_parallel_events() -> DeltaResult<()> {
+    fn parallel_scan_emits_correlated_sequential_and_parallel_events() -> Result<()> {
         let reporter = Arc::new(CapturingReporter::default());
         let _guard = install_thread_local_metrics_reporter(reporter.clone());
 
