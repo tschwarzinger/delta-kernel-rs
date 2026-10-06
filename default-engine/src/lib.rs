@@ -35,6 +35,9 @@ pub mod file_stream;
 pub mod filesystem;
 pub mod json;
 pub mod parquet;
+/// Unity Catalog REST client. Uses tokio's time driver and reqwest's blocking API, so it is
+/// not available on wasm32 targets.
+#[cfg(not(target_family = "wasm"))]
 pub mod rest_store;
 pub mod stats;
 pub mod storage;
@@ -247,8 +250,8 @@ impl DefaultEngineBuilder<DefaultTaskExecutor> {
     }
 
     /// Build the [`DefaultEngine`] instance.
-    pub fn build(self) -> DefaultEngine<executor::tokio::TokioBackgroundExecutor> {
-        let task_executor = Arc::new(executor::tokio::TokioBackgroundExecutor::new());
+    pub fn build(self) -> DefaultEngine<executor::DefaultExecutor> {
+        let task_executor = Arc::new(executor::DefaultExecutor::new());
         DefaultEngine::new_with_opts(self.object_store, task_executor, self.io_config)
     }
 }
@@ -297,7 +300,7 @@ impl<E: TaskExecutor> DefaultEngineBuilder<Arc<E>> {
     }
 }
 
-impl DefaultEngine<executor::tokio::TokioBackgroundExecutor> {
+impl DefaultEngine<executor::DefaultExecutor> {
     /// Create a [`DefaultEngineBuilder`] for constructing a [`DefaultEngine`] with custom options.
     ///
     /// # Parameters

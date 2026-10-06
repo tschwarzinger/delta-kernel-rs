@@ -12,6 +12,7 @@ use itertools::Itertools;
 use url::Url;
 
 use crate::executor::TaskExecutor;
+#[cfg(not(target_family = "wasm"))]
 use crate::UrlExt;
 
 #[derive(Debug)]
@@ -104,17 +105,46 @@ async fn read_files_impl(
         let store = store.clone();
         async move {
             // File URLs need OS path conversion. Other schemes need object-store URL decoding so
-            // already escaped path segments do not get escaped again.
+            // already escaped path segments do not get escaped again. On wasm there is no OS
+            // filesystem, so `file://` URLs go through the generic URL decoder instead.
             let path = if url.scheme() == "file" {
-                let file_path = url.to_file_path().map_err(|_| {
-                    KernelError::InvalidTableLocation(format!("Invalid file URL: {url}"))
-                })?;
-                Path::from_absolute_path(file_path).map_err(|e| {
-                    KernelError::InvalidTableLocation(format!("Invalid file path: {e}"))
-                })?
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let file_path = url.to_file_path().map_err(|_| {
+                        KernelError::InvalidTableLocation(format!("Invalid file URL: {url}"))
+                    })?;
+                    Path::from_absolute_path(file_path).map_err(|e| {
+                        KernelError::InvalidTableLocation(format!("Invalid file path: {e}"))
+                    })?
+                }
+                #[cfg(target_family = "wasm")]
+                {
+                    Path::from_url_path(url.path())?
+                }
             } else {
                 Path::from_url_path(url.path())?
             };
+            #[cfg(target_family = "wasm")]
+            {
+                // reqwest's wasm backend yields a `!Send` future; bridge it into the engine's
+                // `Send`-bound read stream.
+                use crate::executor::wasm::make_send;
+                let url = url.clone();
+                let bytes = make_send(async move {
+                    let response = reqwest::get(url).await.map_err(|e| {
+                        KernelError::generic(format!("Failed to fetch presigned URL: {e}"))
+                    })?;
+                    response.bytes().await.map_err(|e| {
+                        KernelError::generic(format!("Failed to read response bytes: {e}"))
+                    })
+                })
+                .await?;
+                // On wasm the non-presigned path (and its `store`/`range` usage) is not compiled;
+                // keep the local bindings referenced to avoid unused-variable warnings.
+                let _ = (path, range, store);
+                Ok(bytes)
+            }
+            #[cfg(not(target_family = "wasm"))]
             if url.is_presigned() {
                 // have to annotate type here or rustc can't figure it out
                 Ok::<bytes::Bytes, KernelError>(reqwest::get(url).await?.bytes().await?)

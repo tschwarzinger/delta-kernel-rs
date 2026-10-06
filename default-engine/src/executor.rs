@@ -49,6 +49,149 @@ pub trait TaskExecutor: Send + Sync + 'static {
     fn enter(&self) -> Self::Guard<'_>;
 }
 
+/// The [`TaskExecutor`] used by [`crate::DefaultEngineBuilder::build`] when no custom
+/// executor is supplied.
+///
+/// On native targets this is a tokio single-threaded background executor. On wasm32 (where
+/// tokio's thread-based runtimes cannot compile) it is [`wasm::WasmJspiExecutor`].
+#[cfg(not(target_family = "wasm"))]
+pub type DefaultExecutor = tokio::TokioBackgroundExecutor;
+/// [`TaskExecutor`] used by default on wasm32 targets.
+#[cfg(target_family = "wasm")]
+pub type DefaultExecutor = wasm::WasmJspiExecutor;
+
+/// JSPI (JavaScript Promise Integration) executor for `wasm32-unknown-unknown`, where there are no
+/// native threads and no tokio runtime. Async-I/O futures (e.g. reqwest's, backed by `js_sys`) are
+/// `!Send`, so this module also provides [`make_send`] / [`make_send_stream`] to bridge those
+/// `!Send` futures/streams into the engine's `Send`-bound handlers by driving them on the JS
+/// microtask queue and blocking with JSPI.
+#[cfg(target_family = "wasm")]
+pub mod wasm {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use delta_kernel::Result;
+    use futures::channel::oneshot;
+    use futures::future::BoxFuture;
+    use futures::sink::SinkExt;
+    use futures::stream::{BoxStream, StreamExt};
+    use futures::{Future, Stream};
+    use js_sys::Promise;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::spawn_local;
+
+    use crate::TaskExecutor;
+
+    /// Block synchronous wasm execution until the JS promise settles, letting the JS event loop
+    /// run (so microtask-scheduled futures can make progress). Provided by the JSPI build step and
+    /// a JSPI-capable host; see `wasmtest/js/jspi.js`.
+    #[wasm_bindgen(module = "/js/jspi.js")]
+    extern "C" {
+        #[wasm_bindgen(js_name = jspiBlockOnPromise)]
+        fn jspi_block_on_promise(promise: Promise);
+    }
+
+    /// A wasm-only [`TaskExecutor`]: runs tasks on the JS microtask queue and blocks with JSPI.
+    #[derive(Debug, Clone, Default)]
+    pub struct WasmJspiExecutor;
+
+    impl WasmJspiExecutor {
+        /// Create a new wasm executor.
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl TaskExecutor for WasmJspiExecutor {
+        type Guard<'a> = ();
+
+        fn block_on<T>(&self, task: T) -> T::Output
+        where
+            T: Future + Send + 'static,
+            T::Output: Send + 'static,
+        {
+            // `block_on` is called from synchronous engine code. Convert the task to a JS promise
+            // (driven on the microtask queue) and block with JSPI, which yields to the JS event
+            // loop until the task completes.
+            let slot: Rc<RefCell<Option<T::Output>>> = Rc::new(RefCell::new(None));
+            let slot_task = slot.clone();
+            let promise = wasm_bindgen_futures::future_to_promise(async move {
+                let out = task.await;
+                *slot_task.borrow_mut() = Some(out);
+                Ok(JsValue::UNDEFINED)
+            });
+            // SAFETY: JSPI only suspends while the JS event loop runs; it does not escape the
+            // bounds of this call.
+            jspi_block_on_promise(promise);
+
+            let out = slot.borrow_mut().take();
+            out.expect("JSPI block_on must resolve once the task completes")
+        }
+
+        fn spawn<F>(&self, task: F)
+        where
+            F: Future<Output = ()> + Send + 'static,
+        {
+            // No background threads on wasm; run the fire-and-forget task on the microtask queue.
+            spawn_local(async move {
+                let _ = task.await;
+            });
+        }
+
+        fn spawn_blocking<T, R>(&self, task: T) -> BoxFuture<'_, Result<R>>
+        where
+            T: FnOnce() -> R + Send + 'static,
+            R: Send + 'static,
+        {
+            // There is no blocking pool on wasm; run the closure inline.
+            Box::pin(async move { Ok(task()) })
+        }
+
+        fn enter(&self) -> Self::Guard<'_> {}
+    }
+
+    /// Bridge a `!Send` future into a `Send` future by driving it on the JS microtask queue.
+    ///
+    /// The returned future is `Send` (its readiness is driven by a channel), so it can flow through
+    /// the engine's `Send`-bound handlers. At runtime the awaiting side relies on JSPI-blocking
+    /// (via an enclosing [`TaskExecutor::block_on`]) to let the microtask run to completion.
+    pub fn make_send<F>(fut: F) -> impl Future<Output = F::Output> + Send + 'static
+    where
+        F: Future + 'static,
+        F::Output: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        spawn_local(async move {
+            let _ = tx.send(fut.await);
+        });
+        async move { rx.await.expect("spawned wasm future panicked") }
+    }
+
+    /// Bridge a `!Send` stream into a `Send` [`BoxStream`] by driving it on the JS microtask
+    /// queue and forwarding items through an mpsc channel.
+    ///
+    /// `S::Item` must be `Send` (the future that drives the stream is what is `!Send`).
+    pub fn make_send_stream<S>(stream: S, buffer: usize) -> BoxStream<'static, S::Item>
+    where
+        S: Stream + 'static,
+        S::Item: Send + 'static,
+    {
+        let (mut tx, rx) = futures::channel::mpsc::channel(buffer);
+        spawn_local(async move {
+            let mut stream = Box::pin(stream);
+            while let Some(item) = stream.next().await {
+                if tx.send(item).await.is_err() {
+                    break;
+                }
+            }
+        });
+        rx.boxed()
+    }
+}
+
+/// Tokio-backed [`TaskExecutor`]s, available only on non-wasm targets where native threads and a
+/// tokio runtime exist.
+#[cfg(not(target_family = "wasm"))]
 pub mod tokio {
     use std::mem::ManuallyDrop;
     use std::sync::mpsc::channel;

@@ -1,5 +1,6 @@
 //! Default Json handler implementation
 
+#[cfg(not(target_family = "wasm"))]
 use std::io::BufReader;
 use std::num::NonZero;
 use std::sync::Arc;
@@ -222,6 +223,7 @@ async fn open_json_file(
         .with_batch_size(batch_size)
         .with_coerce_primitive(true);
     match result.payload {
+        #[cfg(not(target_family = "wasm"))]
         GetResultPayload::File(file, _) => {
             let reader = builder.build(BufReader::new(file))?;
             let reader = futures::stream::iter(reader).map_err(KernelError::from);

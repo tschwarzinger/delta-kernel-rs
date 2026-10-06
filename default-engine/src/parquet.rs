@@ -421,14 +421,34 @@ impl<E: TaskExecutor> ParquetHandler for DefaultParquetHandler<E> {
 
         let footer_future = async move {
             let metadata = if location.is_presigned() {
-                let client = reqwest::Client::new();
-                let response = client.get(location.as_str()).send().await.map_err(|e| {
-                    KernelError::generic(format!("Failed to fetch presigned URL: {e}"))
-                })?;
-                let bytes = response.bytes().await.map_err(|e| {
-                    KernelError::generic(format!("Failed to read response bytes: {e}"))
-                })?;
-                ArrowReaderMetadata::load(&bytes, reader_options())?
+                #[cfg(target_family = "wasm")]
+                {
+                    // reqwest's wasm backend yields a `!Send` future; bridge it here so the
+                    // enclosing `footer_future` stays `Send` for the engine's Send-bound block_on.
+                    let location = location.as_str().to_owned();
+                    let bytes = crate::executor::wasm::make_send(async move {
+                        let client = reqwest::Client::new();
+                        let response = client.get(&location).send().await.map_err(|e| {
+                            KernelError::generic(format!("Failed to fetch presigned URL: {e}"))
+                        })?;
+                        response.bytes().await.map_err(|e| {
+                            KernelError::generic(format!("Failed to read response bytes: {e}"))
+                        })
+                    })
+                    .await?;
+                    ArrowReaderMetadata::load(&bytes, reader_options())?
+                }
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let client = reqwest::Client::new();
+                    let response = client.get(location.as_str()).send().await.map_err(|e| {
+                        KernelError::generic(format!("Failed to fetch presigned URL: {e}"))
+                    })?;
+                    let bytes = response.bytes().await.map_err(|e| {
+                        KernelError::generic(format!("Failed to read response bytes: {e}"))
+                    })?;
+                    ArrowReaderMetadata::load(&bytes, reader_options())?
+                }
             } else {
                 let path = Path::from_url_path(location.path())?;
                 #[allow(deprecated)]
@@ -554,6 +574,23 @@ impl FileOpener for PresignedUrlOpener {
 
         Ok(Box::pin(async move {
             // fetch the file from the interweb
+            #[cfg(target_family = "wasm")]
+            let reader = {
+                // reqwest's wasm backend yields a `!Send` future; bridge it here so this future
+                // stays `Send` for the engine's Send-bound `FileOpenFuture`.
+                let client = client;
+                let file_location = file_location.clone();
+                crate::executor::wasm::make_send(async move {
+                    let response = client.get(&file_location).send().await.map_err(|e| {
+                        KernelError::generic(format!("Failed to fetch presigned URL: {e}"))
+                    })?;
+                    response.bytes().await.map_err(|e| {
+                        KernelError::generic(format!("Failed to read response bytes: {e}"))
+                    })
+                })
+                .await?
+            };
+            #[cfg(not(target_family = "wasm"))]
             let reader = client.get(&file_location).send().await?.bytes().await?;
             let metadata = ArrowReaderMetadata::load(&reader, reader_options())?;
             let (requested_ordering, mask) = parquet_read_plan(&table_schema, &metadata)?;

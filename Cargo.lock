@@ -1610,6 +1610,7 @@ dependencies = [
  "hdfs-native-object-store 0.16.0",
  "hdfs-native-object-store 0.17.0",
  "itertools 0.14.0",
+ "js-sys",
  "reqwest 0.13.2",
  "rstest",
  "serde",
@@ -1621,6 +1622,8 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wiremock",
 ]
 

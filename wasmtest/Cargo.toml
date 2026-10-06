@@ -20,6 +20,14 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # The crate under test. Default features (the plain core kernel) are what this verifies for wasm.
 delta_kernel = { path = "../kernel" }
+# The default engine, now compiled for wasm32 via its wasm-only WasmJspiExecutor.
+#
+# Wasm must use arrow-59: it maps to object_store 0.13, whose `http` store is wasm-safe,
+# whereas object_store 0.14 (arrow-60) pulls in aws-lc-rs, which cannot build for wasm32.
+# rustls/native-tls are also omitted: on wasm the browser's fetch API handles TLS.
+delta_kernel_default_engine = { path = "../default-engine", default-features = false, features = [
+  "arrow-59",
+] }
 
 # wasm has no OS RNG, so getrandom needs its pure-JS `wasm_js` backend. These declarations do
 # NOT add anything to delta_kernel; they merely enable the feature on the getrandom instances
@@ -27,6 +35,7 @@ delta_kernel = { path = "../kernel" }
 # Cargo feature unification. Same idea as DataFusion's `datafusion/wasmtest`.
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_0_4 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 # delta_kernel uses uuid `v4, fast-rng`, which is rejected on wasm unless a wasm-compatible
 # randomness source feature is present; enable `rng-getrandom` here (feature-unified).
 uuid = { version = "1.22", features = ["rng-getrandom"] }
