@@ -64,7 +64,11 @@ z85 = "3.0.6"
 # lives in the `delta_kernel_default_engine` crate now.
 reqwest = { version = "0.13", default-features = false, optional = true }
 # both arrow versions below are optional and require object_store
-object_store_13 = { package = "object_store", version = "0.13.2", optional = true, features = ["aws", "azure", "gcp", "http"] }
+# Only the `fs` feature (LocalFileSystem) is required by the kernel itself; the `http` store is
+# always enabled because it is backed by reqwest, which also compiles for wasm. The aws/azure/gcp
+# cloud SDKs are gated behind the `cloud-stores` feature so the kernel can build for
+# wasm32-unknown-unknown without pulling ring/aws-lc-rs.
+object_store_13 = { package = "object_store", version = "0.13.2", optional = true, features = ["fs", "http"] }
 
 # arrow 58
 [dependencies.arrow_58]
@@ -142,6 +146,21 @@ default-engine-base = [
   "need-arrow",
   "reqwest",
 ]
+
+# Remote/cloud object store support (aws/azure/gcp). The `http` store is always enabled because it
+# is backed by reqwest, which also compiles for wasm32. Required only by engines that construct
+# cloud stores via parse_url_opts (e.g. the default engine). Not enabled for wasm32 targets (the
+# cloud SDKs pull in ring/aws-lc-rs, which do not build for wasm).
+cloud-stores = [
+  "object_store_13?/aws",
+  "object_store_13?/azure",
+  "object_store_13?/gcp",
+]
+
+# On wasm32-unknown-unknown `std::time::Instant` is unavailable; `web_time` (JS-clock backed) is
+# used in its place via the `utils::Instant` re-export.
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = "1.1"
 
 [build-dependencies]
 rustc_version = "0.4.1"

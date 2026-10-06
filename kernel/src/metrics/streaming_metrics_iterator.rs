@@ -8,7 +8,7 @@
 //! [`MeteredStorageHandler`]: crate::metrics::MeteredStorageHandler
 
 use std::marker::PhantomData;
-use std::time::Instant;
+use crate::utils::Instant;
 
 use bytes::Bytes;
 

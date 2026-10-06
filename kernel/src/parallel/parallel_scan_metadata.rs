@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use crate::utils::Instant;
 
 use delta_kernel_derive::internal_api;
 use tracing::{info_span, Span};

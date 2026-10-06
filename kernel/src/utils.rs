@@ -20,6 +20,15 @@ macro_rules! require {
 
 pub(crate) use require;
 
+/// A drop-in replacement for [`std::time::Instant`] that also works on wasm32-unknown-unknown,
+/// where the std one is unavailable. On every non-wasm target this is exactly
+/// `std::time::Instant`; on wasm it is `web_time::Instant` (backed by the JS clock).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use std::time::Instant;
+
+#[cfg(target_family = "wasm")]
+pub(crate) use web_time::Instant;
+
 /// Dual of the `FromIterator` trait, similar to how `Into` is the dual of `From`. It is
 /// automatically implemented for any iterable whose items collect into `T`, and can drastically
 /// simplify type bounds. For example, `CollectInto` allows to write this:
@@ -63,6 +72,7 @@ pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> DeltaResult<Url> {
     let uri = uri.as_ref();
     let uri_type = resolve_uri_type(uri)?;
     let url = match uri_type {
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         UriType::LocalPath(path) => {
             if !path.exists() {
                 // When we support writes, create a directory if we can
@@ -86,6 +96,14 @@ pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> DeltaResult<Url> {
                 );
                 Error::InvalidTableLocation(msg)
             })?
+        }
+        // wasm32-unknown-unknown has no filesystem, so local paths (and `file://` URIs) are
+        // never resolvable to a Url; report them as invalid table locations.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        UriType::LocalPath(_) => {
+            return Err(Error::InvalidTableLocation(format!(
+                "Local filesystem paths are not supported on wasm32-unknown-unknown: {uri:?}"
+            )));
         }
         UriType::Url(url) => url,
     };
@@ -114,10 +132,19 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> DeltaResult<UriType> {
     if let Ok(url) = Url::parse(&table_uri) {
         let scheme = url.scheme().to_string();
         if url.scheme() == "file" {
-            Ok(UriType::LocalPath(
-                url.to_file_path()
-                    .map_err(|_| Error::invalid_table_location(table_uri))?,
-            ))
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                Ok(UriType::LocalPath(
+                    url.to_file_path()
+                        .map_err(|_| Error::invalid_table_location(table_uri))?,
+                ))
+            }
+            // On wasm32-unknown-unknown `file://` cannot be turned into an OS path; surface the
+            // URL itself, which `try_parse_uri` then rejects as a local path.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                Ok(UriType::LocalPath(PathBuf::from(url.path())))
+            }
         } else if scheme.len() == 1 {
             // NOTE this check is required to support absolute windows paths which may properly
             // parse as url we assume here that a single character scheme is a windows drive letter

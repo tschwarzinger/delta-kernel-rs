@@ -28,18 +28,34 @@ futures = "0.3"
 itertools = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "query", "system-proxy"] }
 serde_json = "1"
-tokio = { version = "1.47", features = ["rt-multi-thread"] }
 tracing = { version = "0.1", features = ["log"] }
 url = "2"
 uuid = { version = "1.18.0", features = ["v4"] }
 
+# tokio is only used by the thread-based tokio executors and tests, neither of which exist on
+# wasm32. Gating it to non-wasm targets keeps it (and its multi-thread runtime) out of wasm builds.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1.47", features = ["rt-multi-thread"] }
+
+# wasm-only dependencies for the JSPI-based executor: bridging `!Send` async-I/O futures into the
+# engine's `Send`-bound handlers by driving them on the JS microtask queue (`wasm-bindgen-futures`)
+# and blocking with JavaScript Promise Integration (`js-sys`).
+[target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
 [features]
-default = ["arrow", "rustls"]
+default = ["arrow", "rustls", "cloud-stores"]
 arrow = ["arrow-59"]
 arrow-59 = ["delta_kernel/arrow-59"]
 arrow-58 = ["delta_kernel/arrow-58"]
 native-tls = ["reqwest/native-tls"]
 rustls = ["reqwest/rustls"]
+# Enables constructing aws/azure/gcp stores via parse_url_opts. On by default for native, but
+# turned off for wasm32 targets (those object_store features pull in ring/aws-lc-rs, which do
+# not build for wasm).
+cloud-stores = ["delta_kernel/cloud-stores"]
 
 [dev-dependencies]
 delta_kernel_default_engine_test_utils = { path = "./test-utils" }

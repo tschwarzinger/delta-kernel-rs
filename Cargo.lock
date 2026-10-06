@@ -1368,6 +1368,7 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "web-time",
  "z85",
 ]
 
@@ -1409,6 +1410,7 @@ dependencies = [
  "futures",
  "hdfs-native-object-store",
  "itertools 0.14.0",
+ "js-sys",
  "reqwest 0.13.2",
  "rstest",
  "serde",
@@ -1420,6 +1422,8 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wiremock",
 ]
 
