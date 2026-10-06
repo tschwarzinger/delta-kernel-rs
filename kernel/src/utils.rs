@@ -104,7 +104,7 @@ pub(crate) fn try_parse_uri(uri: impl AsRef<str>) -> Result<Url> {
         // never resolvable to a Url; report them as invalid table locations.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         UriType::LocalPath(_) => {
-            return Err(Error::InvalidTableLocation(format!(
+            return Err(KernelError::InvalidTableLocation(format!(
                 "Local filesystem paths are not supported on wasm32-unknown-unknown: {uri:?}"
             )));
         }
@@ -145,7 +145,7 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> KernelResult<UriType> {
             }
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
-                Err(Error::invalid_table_location(table_uri))
+                Err(KernelError::invalid_table_location(table_uri))
             }
         } else if scheme.len() == 1 {
             // NOTE this check is required to support absolute windows paths which may properly
@@ -156,7 +156,7 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> KernelResult<UriType> {
             }
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             {
-                Err(Error::invalid_table_location(table_uri))
+                Err(KernelError::invalid_table_location(table_uri))
             }
         } else {
             Ok(UriType::Url(url))
@@ -168,7 +168,7 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> KernelResult<UriType> {
         }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
-            Err(Error::invalid_table_location(table_uri))
+            Err(KernelError::invalid_table_location(table_uri))
         }
     }
 }

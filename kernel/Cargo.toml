@@ -64,8 +64,8 @@ z85 = "3.0.6"
 # lives in the `delta_kernel_default_engine` crate now.
 reqwest = { version = "0.13", default-features = false, optional = true }
 # Arrow and Parquet versions require the matching object_store version.
-object_store_13 = { package = "object_store", version = "0.13.2", optional = true, features = ["aws", "azure", "gcp", "http"] }
-object_store_14 = { package = "object_store", version = "0.14.2", optional = true, features = ["aws", "azure", "gcp", "http"] }
+object_store_13 = { package = "object_store", version = "0.13.2", optional = true, features = ["fs"] }
+object_store_14 = { package = "object_store", version = "0.14.2", optional = true, features = ["fs"] }
 
 # arrow 59
 [dependencies.arrow_59]
@@ -136,6 +136,20 @@ adaptive-metadata-in-dev = []
 # Experimental, temporary, test-only feature flag guarding the in-progress geospatial
 # (geometry/geography) type work. TODO(#2949): remove once full geo support ships.
 geo-type-in-dev = []
+# Remote/cloud object store support (aws/azure/gcp/http). Required only by engines
+# that construct cloud stores via parse_url_opts (e.g. the default engine). Not
+# enabled for wasm32 targets.
+cloud-stores = [
+  "object_store_13?/aws",
+  "object_store_13?/azure",
+  "object_store_13?/gcp",
+  "object_store_13?/http",
+  "object_store_14?/aws",
+  "object_store_14?/azure",
+  "object_store_14?/gcp",
+  "object_store_14?/http",
+]
+
 # Enables shared Arrow-based engine support modules (arrow_data, arrow_expression,
 # ensure_data_types, parquet_row_group_skipping). Used by the delta_kernel_default_engine crate
 # and the SyncEngine. Keeps `reqwest` only for the gated `KernelError::Reqwest` variant.

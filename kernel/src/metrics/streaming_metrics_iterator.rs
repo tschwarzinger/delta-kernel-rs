@@ -7,8 +7,6 @@
 //!
 //! [`MeteredStorageHandler`]: crate::metrics::MeteredStorageHandler
 
-use std::marker::PhantomData;
-
 use bytes::Bytes;
 
 use crate::metrics::events::STORAGE_SPAN;
