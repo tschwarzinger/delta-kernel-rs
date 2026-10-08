@@ -85,9 +85,9 @@ pub mod wasm {
     /// Block synchronous wasm execution until the JS promise settles, letting the JS event loop
     /// run (so microtask-scheduled futures can make progress). Provided by the JSPI build step and
     /// a JSPI-capable host; see `js/jspi.js`.
-    #[wasm_bindgen(module = "/js/jspi.js")]
+    #[wasm_bindgen]
     extern "C" {
-        #[wasm_bindgen(js_name = jspiBlockOnPromise)]
+        #[wasm_bindgen(js_namespace = ["globalThis"], js_name = jspiBlockOnPromise)]
         fn jspi_block_on_promise(promise: Promise);
     }
 
