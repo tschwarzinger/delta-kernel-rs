@@ -87,7 +87,7 @@ pub mod wasm {
     /// a JSPI-capable host; see `js/jspi.js`.
     #[wasm_bindgen]
     extern "C" {
-        #[wasm_bindgen(js_namespace = ["globalThis"], js_name = jspiBlockOnPromise)]
+        #[wasm_bindgen(js_namespace = ["globalThis"], js_name = jspiBlockOnPromise, suspending)]
         fn jspi_block_on_promise(promise: Promise);
     }
 

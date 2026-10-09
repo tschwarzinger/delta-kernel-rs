@@ -2,7 +2,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use delta_kernel_derive::internal_api;
 use url::Url;
@@ -28,6 +28,15 @@ pub(crate) use std::time::Instant;
 
 #[cfg(target_family = "wasm")]
 pub(crate) use web_time::Instant;
+
+/// A drop-in replacement for [`std::time::SystemTime`] that also works on
+/// wasm32-unknown-unknown (JS-clock backed). On every non-wasm target this is
+/// exactly `std::time::SystemTime`.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use std::time::SystemTime;
+
+#[cfg(target_family = "wasm")]
+pub(crate) use web_time::SystemTime;
 
 /// Dual of the `FromIterator` trait, similar to how `Into` is the dual of `From`. It is
 /// automatically implemented for any iterable whose items collect into `T`, and can drastically
@@ -160,7 +169,7 @@ fn resolve_uri_type(table_uri: impl AsRef<str>) -> DeltaResult<UriType> {
 /// Returns the current time as a Duration since Unix epoch.
 pub(crate) fn current_time_duration() -> DeltaResult<Duration> {
     SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|e| Error::generic(format!("System time before Unix epoch: {e}")))
 }
 

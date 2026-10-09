@@ -3,7 +3,8 @@ use std::iter;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use crate::utils::Instant;
 
 use delta_kernel_derive::internal_api;
 use tracing::instrument;
